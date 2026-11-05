@@ -2,6 +2,7 @@
 import os
 import sys
 from pathlib import Path
+import time
 
 import pyspark.sql.functions as F
 from pyspark.sql import Column, DataFrame, SparkSession
@@ -105,6 +106,7 @@ def clean_events(events: DataFrame) -> DataFrame:
 
 def write_batch(batch_df: DataFrame, batch_id: int) -> None:
     """Called by Spark once per micro-batch with a normal (non-streaming) DataFrame."""
+    start = time.perf_counter()
     batch_df.cache()  # we use it 3 times below; avoid recomputing
     total = batch_df.count()
     if total == 0:
@@ -126,7 +128,9 @@ def write_batch(batch_df: DataFrame, batch_id: int) -> None:
     valid.write.jdbc(JDBC_URL, TARGET_TABLE, mode="append", properties=JDBC_PROPERTIES)
 
     reasons = {r["rejection_reason"]: r["count"] for r in rejects}
-    print(f"[batch {batch_id}] received={total} written={written} rejected={rejected} {reasons}")
+    elapsed = time.perf_counter() - start
+    print(f"[batch {batch_id}] received={total} written={written} rejected={rejected} "
+        f"{reasons} took={elapsed:.2f}s rate={written / elapsed:.0f} rows/s")
     batch_df.unpersist()
 
 def main() -> None:
