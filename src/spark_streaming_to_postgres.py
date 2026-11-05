@@ -8,7 +8,7 @@ import pyspark.sql.functions as F
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql.types import StringType, StructField, StructType
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INPUT_DIR = PROJECT_ROOT / "data" / "incoming"
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints" / "events"
 
