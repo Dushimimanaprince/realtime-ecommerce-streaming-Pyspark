@@ -7,3 +7,4 @@ spark-warehouse/
 derby.log
 .env
 .ipynb_checkpoints/
+scripts
