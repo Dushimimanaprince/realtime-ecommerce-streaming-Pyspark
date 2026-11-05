@@ -15,6 +15,17 @@ TRIGGER_INTERVAL = "5 seconds"
 TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss"
 VALID_EVENT_TYPES = ["view", "purchase"]
 
+JDBC_PACKAGE = "org.postgresql:postgresql:42.7.4"
+JDBC_URL = "jdbc:postgresql://localhost:5432/ecommerce_streaming"
+JDBC_PROPERTIES = {
+    "user": os.getenv("PG_USER", "streaming_user"),
+    "password": os.getenv("PG_PASSWORD", "streaming_pass"),  # dev only
+    "driver": "org.postgresql.Driver",
+}
+TARGET_TABLE = "events"
+
+
+
 # Every column is read as text. Types are converted (and bad values handled) in the cleaning step.
 EVENT_SCHEMA = StructType([
     StructField("event_id", StringType(), True),
@@ -39,6 +50,7 @@ def create_spark_session() -> SparkSession:
         .appName("Ecommerce Streaming to PostgreSQL")
         .master("local[*]")
         .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.jars.packages", JDBC_PACKAGE)
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -91,6 +103,31 @@ def clean_events(events: DataFrame) -> DataFrame:
     )
     return df.withColumn("rejection_reason", rejection_reason)
 
+def write_batch(batch_df: DataFrame, batch_id: int) -> None:
+    """Called by Spark once per micro-batch with a normal (non-streaming) DataFrame."""
+    batch_df.cache()  # we use it 3 times below; avoid recomputing
+    total = batch_df.count()
+    if total == 0:
+        batch_df.unpersist()
+        return
+
+    rejects = (
+        batch_df.filter(F.col("rejection_reason").isNotNull())
+        .groupBy("rejection_reason").count().collect()
+    )
+    rejected = sum(r["count"] for r in rejects)
+
+    valid = (
+        batch_df.filter(F.col("rejection_reason").isNull())
+        .drop("rejection_reason")
+        .dropDuplicates(["event_id"])
+    )
+    written = valid.count()
+    valid.write.jdbc(JDBC_URL, TARGET_TABLE, mode="append", properties=JDBC_PROPERTIES)
+
+    reasons = {r["rejection_reason"]: r["count"] for r in rejects}
+    print(f"[batch {batch_id}] received={total} written={written} rejected={rejected} {reasons}")
+    batch_df.unpersist()
 
 def main() -> None:
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -99,10 +136,9 @@ def main() -> None:
     events = clean_events(read_events(spark))
 
     query = (
-        events.writeStream
-        .format("console")
-        .outputMode("append")
-        .option("truncate", "false")
+        clean_events(read_events(spark))
+        .writeStream
+        .foreachBatch(write_batch)
         .option("checkpointLocation", CHECKPOINT_DIR.as_uri())
         .trigger(processingTime=TRIGGER_INTERVAL)
         .start()
